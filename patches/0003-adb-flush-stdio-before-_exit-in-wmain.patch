@@ -1,0 +1,56 @@
+From: adb-rt (armv7-pc-windows-msvc port)
+Subject: [PATCH] sysdeps_win32: flush stdio before _exit() in wmain()
+
+adb's Windows entry point ends with
+
+    _exit(main(argc, narrow_args.data()));
+
+_exit() terminates the process without flushing the C runtime's stdio buffers.
+
+When stdout is a CONSOLE it is unbuffered, so every write has already reached the
+console and nothing is lost -- which is why this has never been noticed. When stdout
+is a PIPE or a REDIRECT the CRT makes it FULLY BUFFERED (4 KB), and `adb devices -l`
+emits far less than one buffer, so the entire output is discarded at exit and the
+process still exits 0.
+
+Measured, x64 twin of adb's output path (BATCH-ADB-7 section 3), stdout redirected:
+
+    printf/fprintf/fputs/fwrite all return their byte counts (52/23/13/14)
+    fflush(stdout) returns 0, errno 0
+    the file is 0 bytes
+
+    with setvbuf(stdout, NULL, _IONBF, 0) first  -> all 107 bytes land
+    with an explicit fflush(stdout) before exit  -> all 107 bytes land
+
+So the file descriptor is healthy and the data is buffered correctly; only the
+exit-time flush is missing. stderr is unaffected because it is unbuffered.
+
+This broke every consumer that reads adb's stdout rather than watching a console.
+scrcpy was the first: it runs `adb devices -l` through a pipe, finds no
+"List of devices attached" header, and sc_adb_parse_devices() returns false.
+
+The one-line fix keeps the reason the original code used _exit() in the first place --
+the comment above it asks NOT to destruct NarrowArgs, and _exit() still skips all
+destructors and atexit handlers. It only adds the flush that the buffers need.
+
+fflush(nullptr) flushes every open output stream, which is what the CRT's own exit
+path would have done.
+
+--- a/sysdeps_win32.cpp
++++ b/sysdeps_win32.cpp
+@@ -2911,7 +2911,14 @@ extern "C" int main(int argc, char** argv);
+ extern "C" int wmain(int argc, wchar_t **argv) {
+     // Convert args from UTF-16 to UTF-8 and pass that to main().
+     NarrowArgs narrow_args(argc, argv);
+
++    const int rc = main(argc, narrow_args.data());
++
++    // _exit() below does not flush stdio. On a console stdout is unbuffered so nothing is
++    // lost, but when stdout is a pipe or a redirect it is fully buffered and the whole
++    // output would be discarded -- silently, with exit code 0.
++    fflush(nullptr);
++
+     // Avoid destructing NarrowArgs: argv might have been mutated to point to string literals.
+-    _exit(main(argc, narrow_args.data()));
++    _exit(rc);
+ }

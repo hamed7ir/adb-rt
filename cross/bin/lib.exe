@@ -1,0 +1,13 @@
+#!/bin/sh
+# ffmpeg-rt: shim for the MSVC librarian.
+# FFmpeg's compat/windows/makedef (line 57) falls back to a hardcoded `lib.exe`
+# when $AR is unset, and configure's SLIB_CREATE_DEF_CMD exports only LDFLAGS and
+# EXTERN_PREFIX -- never AR. Upstream assumes a real MSVC environment where lib.exe
+# is on PATH. Supplying it here avoids patching FFmpeg. llvm-lib.exe is lib.exe-
+# compatible and is the same binary as llvm-ar.exe (verified by sha256).
+# Paths come from config.sh at the repo root; this wrapper derives that root from its own
+# location, so it works from any checkout and from whatever cwd configure invokes it in.
+_d=$(cd "$(dirname "$0")/../.." && pwd)
+. "$_d/config.sh"
+
+exec "$RT2/llvm-lib.exe" "$@"

@@ -1,0 +1,219 @@
+#!/bin/sh
+# adb-rt BATCH-ADB-5: generate driver/adb-rt-winusb.inf.
+#
+# Binds the Android ADB interface to the in-box WinUSB driver on ARM32 Windows (RT 8.1).
+#
+# usage (the complete set for this phone -- all three USB modes):
+#   ./make-inf.sh 'USB\VID_0E8D&PID_201C' \
+#                 'USB\VID_0E8D&PID_201D&MI_01' \
+#                 'USB\VID_0E8D&PID_200C&MI_01'
+#
+# Regenerating is the supported way to change the ID list. Do NOT hand-edit the .inf: the
+# self-checks below only run here, and every failure mode they catch is SILENT on the device.
+#
+# Optional environment overrides:
+#   DRIVERVER_DATE  default 01/01/2026
+#   DRIVERVER_VER   default 1.0.0.0
+set -eu
+
+OUT="$(dirname "$0")/adb-rt-winusb.inf"
+TMP="$OUT.tmp"
+
+if [ "$#" -lt 1 ]; then
+    echo "error: give at least one hardware ID" >&2
+    echo "usage: $0 'USB\\VID_0E8D&PID_201C' ['USB\\VID_0E8D&PID_201D&MI_01' ...]" >&2
+    exit 2
+fi
+
+# --- validate, so a typo cannot silently produce a non-matching INF -------------------------
+for id in "$@"; do
+    case "$id" in
+        USB\\VID_*\&PID_*) ;;
+        *) echo "error: '$id' does not look like a USB hardware ID (expected USB\\VID_xxxx&PID_xxxx...)" >&2
+           exit 2 ;;
+    esac
+    case "$id" in
+        *VID_XXXX*|*PID_XXXX*|*MI_XX) echo "error: '$id' still contains template placeholders" >&2; exit 2 ;;
+    esac
+done
+
+# --- DriverVer -------------------------------------------------------------------------------
+# DriverVer must parse and its date must not be in the future RELATIVE TO THE DEVICE.
+# 01/01/2026 is safe here, and that is measured rather than hoped: the TRIP-ADB-2 server log from
+# the Surface RT carries timestamps "09-22 08:33:22", matching the real date, so the RT's clock
+# is correct and a 01/01/2026 DriverVer lies in its past.
+DVDATE="${DRIVERVER_DATE:-01/01/2026}"
+DVVER="${DRIVERVER_VER:-1.0.0.0}"
+
+# Two description strings, not one. Legal either way -- a shipped android_winusb.inf on this box
+# has 179 model lines sharing just 3 description keys, so duplicates are normal and setupapi does
+# NOT reject them.
+# The split is now LOAD-BEARING: this phone has three ADB-bearing USB modes with three different
+# hardware IDs, and the name Device Manager shows after the install says WHICH line fired --
+# the bare single-interface ID (mode "No data transfer") or a composite &MI_01 child
+# (modes "File transfer" / "PTP"). That is the disambiguation the device procedure needs.
+emit_models() {
+    for id in "$@"; do
+        case "$id" in
+            *\&MI_*) printf '%%CompositeAdbInterface%% = WinUSB_Install, %s\n' "$id" ;;
+            *)       printf '%%SingleAdbInterface%%    = WinUSB_Install, %s\n' "$id" ;;
+        esac
+    done
+}
+
+{
+cat <<'HEADER'
+; adb-rt-winusb.inf
+; Binds the Android ADB interface to WinUSB on ARM32 Windows (Windows RT 8.1).
+;
+; WHY THIS FILE EXISTS
+;   libusb accepts a device only if its driver SERVICE NAME is one of
+;   {"libusbK", "libusb0", "WinUSB"} -- libusb-1.0.28/libusb/os/windows_winusb.c:2324.
+;   So the ADB interface must be bound to the WinUSB service specifically.
+;
+;   Every shipped android_winusb.inf declares NTx86 and NTamd64 and NO NTarm (measured: 5
+;   copies on the dev box, 0 hits). That is why no Android driver has ever bound on an ARM32
+;   Windows device, and why this file exists at all.
+;
+;   winusb.sys is in-box and Microsoft-signed on Windows RT 8.1, so NO kernel binary is built,
+;   ported or signed here. An INF is the entire mechanism.
+;
+; TARGET -- this phone has THREE ADB-bearing USB modes, each a different hardware ID.
+; Measured on the dev box against a MediaTek-based handset, VID 0E8D:
+;
+;   mode "No data transfer"  PID 201C  SINGLE interface
+;       USB\VID_0E8D&PID_201C                 Service WinUSB   <- Android ADB Interface
+;
+;   mode "File transfer"     PID 201D  COMPOSITE
+;       USB\VID_0E8D&PID_201D                 Service usbccgp  <- parent, binds ITSELF
+;       USB\VID_0E8D&PID_201D&MI_00           Service WUDFWpdMtp
+;       USB\VID_0E8D&PID_201D&MI_01           Service WinUSB   <- Android Composite ADB Interface
+;
+;   mode "PTP"               PID 200C  COMPOSITE
+;       USB\VID_0E8D&PID_200C                 Service usbccgp  <- parent, binds ITSELF
+;       USB\VID_0E8D&PID_200C&MI_00           Service WUDFWpdMtp
+;       USB\VID_0E8D&PID_200C&MI_01           Service WinUSB   <- Android Composite ADB Interface
+;
+; NO usbccgp / Composite.Dev SECTIONS HERE, DELIBERATELY.
+;   The composite PARENTS bind to usbccgp with no vendor INF involved -- usbccgp is the in-box
+;   composite driver, reached through the generic USB\COMPOSITE compatible ID in usb.inf. The
+;   split into &MI_00 / &MI_01 therefore happens on any Windows, including RT, with nothing
+;   installed. Only the &MI_01 CHILD needs binding. Adding a Composite_Install /
+;   Needs=Composite.Dev section would be wrong.
+;
+; Uses the in-box USBDevice setup class (Windows 8+), which needs no [ClassInstall32].
+; GENERATED by driver/make-inf.sh -- regenerate rather than hand-editing.
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = USBDevice
+ClassGuid   = {88BAE032-5A81-49f0-BC3D-A4FF138216D6}
+Provider    = %ProviderName%
+HEADER
+
+printf 'DriverVer   = %s,%s\n' "$DVDATE" "$DVVER"
+
+cat <<'MID'
+CatalogFile = adb-rt-winusb.cat
+
+; NTarm is the whole point. Each decoration below MUST have a matching section: a decoration
+; with no section, or a section with no decoration, installs nothing AND REPORTS NO ERROR.
+[Manufacturer]
+%ProviderName% = AdbRt, NTarm, NTx86, NTamd64
+
+[AdbRt.NTarm]
+MID
+emit_models "$@"
+
+printf '\n[AdbRt.NTx86]\n'
+emit_models "$@"
+
+printf '\n[AdbRt.NTamd64]\n'
+emit_models "$@"
+
+cat <<'TAIL'
+
+[WinUSB_Install]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[WinUSB_Install.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
+
+[WinUSB_Install.HW]
+AddReg = Dev_AddReg
+
+[Dev_AddReg]
+HKR,,DeviceInterfaceGUIDs,0x10000,"{F72FE0D4-CBCB-407D-8814-9ED673D0DD6B}"
+
+; NO [WinUSB_Install.CoInstallers] SECTION -- deliberately.
+; The classic WinUSB template adds a CoInstallers32 entry pointing at WdfCoInstaller01009.dll,
+; a KMDF co-installer this package does not ship. On Windows 8.1 winusb.inf's WINUSB.NT already
+; performs the KMDF binding, and a reference to a missing co-installer DLL is a real install
+; failure. If you merge this with a template from elsewhere, delete those sections.
+
+[Strings]
+ProviderName          = "adb-rt"
+SingleAdbInterface    = "Android ADB Interface (WinUSB, ARM32)"
+CompositeAdbInterface = "Android Composite ADB Interface (WinUSB, ARM32)"
+TAIL
+} > "$TMP"
+
+# --- encoding and line endings ---------------------------------------------------------------
+# setupapi is unforgiving: a UTF-8 BOM yields "the specified INF is not valid" with no further
+# detail, and LF-only line endings are not reliably accepted. Write CRLF, plain ASCII, no BOM.
+sed 's/$/\r/' "$TMP" > "$OUT"
+rm -f "$TMP"
+
+# --- verify what we just wrote, rather than assuming -----------------------------------------
+echo "wrote $OUT"
+echo "  bytes            : $(wc -c < "$OUT")"
+echo "  CRLF line endings: $(grep -c $'\r$' "$OUT" || true) of $(wc -l < "$OUT") lines"
+if head -c 3 "$OUT" | od -An -tx1 | grep -qi 'ef bb bf'; then
+    echo "  !!! UTF-8 BOM PRESENT - setupapi will reject this file"; exit 1
+else
+    echo "  BOM              : none"
+fi
+if LC_ALL=C grep -qP '[^\x00-\x7F]' "$OUT" 2>/dev/null; then
+    echo "  !!! non-ASCII bytes present"; exit 1
+else
+    echo "  encoding         : ASCII only"
+fi
+# `|| true` is REQUIRED: grep -c exits 1 on a count of 0, and under `set -e` that kills the
+# script -- so the CoInstallers check, which should normally find ZERO, silently aborted the run.
+NTARM_DECL=$(grep -v '^;' "$OUT" | grep -c 'NTarm' || true)
+COINST=$(grep -v '^;' "$OUT" | grep -ci 'CoInstallers' || true)
+COMPOSITE=$(grep -v '^;' "$OUT" | grep -ci 'usbccgp\|Composite\.Dev' || true)
+echo "  NTarm directives : $NTARM_DECL   (expect 2: the [Manufacturer] decoration + [AdbRt.NTarm])"
+echo "  CoInstallers     : $COINST   (expect 0; a missing DLL is a real install failure)"
+echo "  usbccgp sections : $COMPOSITE   (expect 0; the composite parent binds itself)"
+[ "$NTARM_DECL" -eq 2 ] || { echo "  !!! NTarm directive count is not 2 - decoration/section mismatch installs NOTHING silently"; exit 1; }
+[ "$COINST" -eq 0 ] || { echo "  !!! a CoInstallers directive survived"; exit 1; }
+[ "$COMPOSITE" -eq 0 ] || { echo "  !!! a composite/usbccgp directive survived"; exit 1; }
+
+# --- BATCH-ADB-5 §1: EVERY id must appear in EVERY decorated section --------------------------
+# A model line missing from one architecture's section installs nothing on that architecture and
+# reports no error -- the same silent class as the NTarm and CoInstallers traps. With three PIDs
+# across three sections there are nine chances to drop one, so assert all nine.
+echo "  per-section coverage:"
+COVER_FAIL=0
+for sect in NTarm NTx86 NTamd64; do
+    got=$(sed "s/$(printf '\r')\$//" "$OUT" \
+          | awk -v s="[AdbRt.$sect]" 'index($0,s)==1{f=1;next} /^\[/{f=0} f && /WinUSB_Install, /{sub(/^.*WinUSB_Install, /,""); print}')
+    n=$(printf '%s\n' "$got" | grep -c . || true)
+    miss=""
+    for id in "$@"; do
+        printf '%s\n' "$got" | grep -qxF "$id" || miss="$miss $id"
+    done
+    if [ -n "$miss" ] || [ "$n" -ne "$#" ]; then
+        echo "    [AdbRt.$sect] : $n/$# ids  !!! MISSING:$miss"
+        COVER_FAIL=1
+    else
+        echo "    [AdbRt.$sect] : $n/$# ids  OK"
+    fi
+done
+[ "$COVER_FAIL" -eq 0 ] || { echo "  !!! not every id is present in every decorated section"; exit 1; }
+
+echo "  model lines      : $(grep -c 'WinUSB_Install, USB' "$OUT" || true)  ($# ID(s) x 3 architectures)"
+echo "OK - INF generated and self-checked."

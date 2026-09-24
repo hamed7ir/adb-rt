@@ -1,0 +1,59 @@
+# ---------------------------------------------------------------------------
+# adb-rt
+# ---------------------------------------------------------------------------
+
+# Build outputs. The shipping binaries are RELEASE ASSETS, not tracked files.
+build/
+dist/
+*.obj
+*.lib
+*.exe
+*.dll
+*.pdb
+*.res
+*.zip
+*.tar.*
+*.log
+# ... except this one. It is a SHELL SCRIPT named lib.exe, because FFmpeg's makedef
+# falls back to a hardcoded lib.exe when $AR is unset and looks for it on PATH.
+# NOTE: gitignore has no trailing comments -- a `!pattern  # why` line silently matches
+# nothing, which is how this exception was dead until it was checked with check-ignore.
+!cross/bin/lib.exe
+
+# Vendored upstream sources. Reconstruct them with scripts/fetch-deps.sh -- every pin is in
+# there: a sha256 for each tarball, a commit SHA for each git component. Redistributing somebody else's tree here would make this repo
+# unreviewable and the patch count meaningless.
+deps/
+
+# Working notes, batch specifications and device-trip reports. These carry the project's
+# history, not its product, and they are where the machine-specific strings live.
+BATCH-*.md
+reports/
+STAGE-*-RESULTS.md
+TRIP-*-RESULTS.md
+STATE.md
+RECON.md
+RECIPE.md
+notes/
+CLAUDE.md
+
+# Generated at build time from config.sh
+cross/arm32-link.rsp
+cross/arm32-msvc.rsp
+cross/x64-link.rsp
+cross/x64-msvc.rsp
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.swp
+*~
+
+# The scrub list names real identifiers -- never commit it.
+.scrub-discriminators
+
+# Frozen copies of a script, made so it can be edited while a long run is in flight.
+# A killed run can leave one behind, and `git add -A` would otherwise stage it.
+scripts/.*

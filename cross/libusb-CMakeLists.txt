@@ -1,0 +1,56 @@
+# adb-rt: minimal CMake build for libusb 1.0.28 on Windows.
+#
+# libusb ships NO CMakeLists and NO meson - only autotools (useless for an MSVC cross
+# build) and 15 MSBuild .vcxproj files. Rather than port either, this file compiles the
+# exact source list libusb's own msvc/libusb_static.vcxproj uses, against libusb's own
+# msvc/config.h.
+#
+# This is BUILD INFRASTRUCTURE, placed OUTSIDE the libusb tree and pointed at it.
+# The libusb source carries ONE patch: patches/0002-libusb-backport-windows-hotplug.patch,
+# which backports upstream libusb's Windows hotplug backend. Nothing else is modified, and
+# the file list below therefore includes os/windows_hotplug.c, which libusb's own
+# msvc/libusb_static.vcxproj does not list.
+
+cmake_minimum_required(VERSION 3.16)
+project(libusb_arm32 C)
+
+if(NOT DEFINED LIBUSB_DIR)
+  message(FATAL_ERROR "pass -DLIBUSB_DIR=<path to libusb-1.0.28>")
+endif()
+
+# exactly the ClCompile list from msvc/libusb_static.vcxproj
+set(LIBUSB_SRCS
+  ${LIBUSB_DIR}/libusb/core.c
+  ${LIBUSB_DIR}/libusb/descriptor.c
+  ${LIBUSB_DIR}/libusb/hotplug.c
+  ${LIBUSB_DIR}/libusb/io.c
+  ${LIBUSB_DIR}/libusb/strerror.c
+  ${LIBUSB_DIR}/libusb/sync.c
+  ${LIBUSB_DIR}/libusb/os/events_windows.c
+  ${LIBUSB_DIR}/libusb/os/threads_windows.c
+  ${LIBUSB_DIR}/libusb/os/windows_common.c
+  # BATCH-ADB-6: upstream's Windows hotplug backend, backported into the pinned 1.0.28.
+  ${LIBUSB_DIR}/libusb/os/windows_hotplug.c
+  ${LIBUSB_DIR}/libusb/os/windows_usbdk.c
+  ${LIBUSB_DIR}/libusb/os/windows_winusb.c
+)
+
+add_library(usb-1.0 STATIC ${LIBUSB_SRCS})
+
+target_include_directories(usb-1.0 PRIVATE
+  ${LIBUSB_DIR}/libusb
+  ${LIBUSB_DIR}/msvc      # libusb's own config.h for MSVC builds
+)
+target_include_directories(usb-1.0 INTERFACE ${LIBUSB_DIR}/libusb)
+
+# libusb's msvc build defines these; mirror them rather than inventing any
+target_compile_definitions(usb-1.0 PRIVATE
+  _CRT_SECURE_NO_WARNINGS
+  WIN32_LEAN_AND_MEAN
+  # Makes the backend's get_device_list slot NULL, so LIBUSB_CAP_HAS_HOTPLUG is 1 and
+  # libusb_hotplug_register_callback succeeds -- adb LOG(FATAL)s without it.
+  LIBUSB_WINDOWS_HOTPLUG
+)
+
+# the Windows backend needs these import libs at final link time
+target_link_libraries(usb-1.0 INTERFACE advapi32 ole32 setupapi winmm)

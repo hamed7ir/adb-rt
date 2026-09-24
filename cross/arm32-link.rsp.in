@@ -1,0 +1,4 @@
+-machine:arm
+-libpath:"@VCTOOLS@/lib/arm"
+-libpath:"@WINSDK@/Lib/@WINSDKVER@/ucrt/arm"
+-libpath:"@WINSDK@/Lib/@WINSDKVER@/um/arm"

@@ -1,0 +1,4 @@
+--target=armv7-pc-windows-msvc
+-vctoolsdir "@VCTOOLS@"
+-winsdkdir "@WINSDK@"
+-winsdkversion @WINSDKVER@

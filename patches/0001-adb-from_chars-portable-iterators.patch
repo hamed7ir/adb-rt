@@ -1,0 +1,54 @@
+From: adb-rt (armv7-pc-windows-msvc port)
+Subject: [PATCH] adb: use string_view::data() with std::from_chars, not begin()/end()
+
+*** UPSTREAMABLE TO AOSP. This is a genuine portability fix, not a local workaround. ***
+
+ParseUint() calls std::from_chars(str.begin(), str.end(), value) on a std::string_view.
+That only compiles because libc++ and libstdc++ HAPPEN to define
+std::string_view::const_iterator as a bare `const char*`. The C++ standard leaves that type
+IMPLEMENTATION-DEFINED ([string.view.template] - it need only be a random-access iterator),
+so the current code relies on unspecified behaviour.
+
+The MSVC STL defines it as a checked class, `std::_String_view_iterator<char_traits<char>>`.
+std::from_chars takes `const char*`, so on MSVC the call does not compile:
+
+  adb_utils.h(114): error: no matching function for call to 'from_chars'
+    note: candidate function not viable: no known conversion from 'const_iterator'
+          (aka '_String_view_iterator<std::char_traits<char>>') to 'const char *const'
+
+str.data() and str.data() + str.size() are the portable spelling, are exactly equivalent on
+libc++/libstdc++, and are what from_chars actually wants. Three sites in one function:
+
+  114  the from_chars() call itself
+  118  comparing res.ptr (const char*) against str.end()
+  122  str.end() - res.ptr  -> invalid operands (const_iterator and const char* const)
+
+Note: three lines, not two. 118 and 122 fail for the same reason as 114 and are only
+reachable once 114 is fixed, so they surface one at a time.
+
+No behavioural change on any toolchain.
+
+Measured on: clang 23.1.1-rt2, --target=thumbv7-unknown-windows-msvc, MSVC 14.44.35207 STL.
+Fixes compilation of sockets.cpp and client/transport_local.cpp.
+---
+--- a/adb_utils.h
++++ b/adb_utils.h
+@@ -111,15 +111,15 @@
+ template <typename T>
+ inline bool ParseUint(T* result, std::string_view str, std::string_view* remaining = nullptr) {
+     T value;
+-    const auto res = std::from_chars(str.begin(), str.end(), value);
++    const auto res = std::from_chars(str.data(), str.data() + str.size(), value);
+     if (res.ec != std::errc{}) {
+         return false;
+     }
+-    if (res.ptr != str.end() && !remaining) {
++    if (res.ptr != str.data() + str.size() && !remaining) {
+         return false;
+     }
+     if (remaining) {
+-        *remaining = std::string_view(res.ptr, str.end() - res.ptr);
++        *remaining = std::string_view(res.ptr, str.data() + str.size() - res.ptr);
+     }
+     *result = value;
+     return true;
